@@ -1,0 +1,58 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  labels:
+    app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}
+spec: {}
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  labels:
+    app: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverBuild}}
+  name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverBuild}}
+  annotations:
+    specialresource.openshift.io/wait: "true"
+    specialresource.openshift.io/driver-container-vendor: intel
+    specialresource.openshift.io/kernel-affine: "true"
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  runPolicy: "Serial"
+  triggers:
+    - type: "ConfigChange"
+    - type: "ImageChange"
+  source:
+    dockerfile: |
+      FROM {{ .Values.driverToolkitImage  }} as builder
+
+      WORKDIR /build/
+
+      RUN git clone https://github.com/dell/dkms dkms && cd dkms && make install-redhat
+
+      RUN git clone -b {{.Values.specialresource.spec.driverContainer.source.git.ref}} {{.Values.specialresource.spec.driverContainer.source.git.uri}} && cd intel-gpu-pmt-backports && BUILD_VERSION=1 make -f Makefile.dkms dkmsrpm-pkg && dnf install -y ~/rpmbuild/RPMS/x86_64/intel-platform-pmt-dkms*.rpm
+ 
+      FROM registry.redhat.io/ubi8/ubi-minimal
+
+      RUN microdnf -y install kmod
+
+      COPY --from=builder /etc/driver-toolkit-release.json /etc/
+      COPY --from=builder /lib/modules/{{ .Values.kernelFullVersion }}/* /lib/modules/{{ .Values.kernelFullVersion }}/
+
+  strategy:
+    dockerStrategy:
+      buildArgs:
+        - name: "IMAGE"
+          value: {{ .Values.driverToolkitImage  }}
+        {{- range $arg := .Values.buildArgs }}
+        - name: {{ $arg.name }}
+          value: {{ $arg.value }}
+        {{- end }}
+        - name: KVER
+          value: {{ .Values.kernelFullVersion }}
+  output:
+    to:
+      kind: ImageStreamTag
+      name: {{.Values.specialresource.metadata.name}}-{{.Values.groupName.driverContainer}}:v{{.Values.kernelFullVersion}}
+
